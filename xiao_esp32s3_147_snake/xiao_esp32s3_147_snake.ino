@@ -135,6 +135,23 @@ bool     wasTouching = false;
 uint32_t lastTouchMs = 0;
 static constexpr uint32_t TOUCH_COOLDOWN = 150;
 
+// ========================= V2 visual effects =========================
+
+struct BurstParticle {
+  int16_t x, y;
+  int8_t vx, vy;
+  uint16_t color;
+};
+
+static constexpr uint8_t BURST_PARTICLES = 12;
+static constexpr uint32_t BURST_MS = 420;
+static constexpr uint32_t FLASH_MS = 90;
+static BurstParticle burst[BURST_PARTICLES];
+static uint32_t burstStarted = 0;
+static uint32_t burstUntil = 0;
+static uint32_t flashUntil = 0;
+static int16_t eatTextX = 0;
+static int16_t eatTextY = 0;
 // ========================= I2C helpers =========================
 
 static int16_t le16(const uint8_t *p) {
@@ -206,22 +223,19 @@ static void drawTopBar() {
 
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(C_GREEN, C_TOP_BG);
-  tft.drawString("SNAKE", 6, 4, 2);
+  tft.drawString("SNAKE", 5, 5, 2);
 
+  String hud = "SCORE " + String(score);
   tft.setTextColor(C_WHITE, C_TOP_BG);
-  tft.setCursor(100, 8);
-  tft.setTextSize(1);
-  tft.print("Score:");
-  tft.print(score);
+  tft.drawRightString(hud, SCREEN_W - 5, 8, 1);
 }
 
 static void updateScore() {
-  tft.fillRect(140, 6, 32, 16, C_TOP_BG);
+  tft.fillRect(88, 3, SCREEN_W - 91, TOP_BAR_H - 4, C_TOP_BG);
+  String hud = "SCORE " + String(score);
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(C_WHITE, C_TOP_BG);
-  tft.setTextSize(1);
-  tft.setCursor(140, 8);
-  tft.print(score);
+  tft.drawRightString(hud, SCREEN_W - 5, 8, 1);
 }
 
 static void drawFood() {
@@ -233,6 +247,75 @@ static void drawFood() {
   tft.fillCircle(x - 1, y - 1, 1, TFT_WHITE);
 }
 
+static void startEatEffect(int col, int row) {
+  int cx = PLAY_X + col * CELL_SIZE + CELL_SIZE / 2;
+  int cy = PLAY_Y + row * CELL_SIZE + CELL_SIZE / 2;
+  burstStarted = millis();
+  burstUntil = burstStarted + BURST_MS;
+  flashUntil = burstStarted + FLASH_MS;
+  eatTextX = cx;
+  eatTextY = cy;
+
+  for (uint8_t i = 0; i < BURST_PARTICLES; ++i) {
+    burst[i].x = cx;
+    burst[i].y = cy;
+    burst[i].vx = (int8_t)random(-3, 4);
+    burst[i].vy = (int8_t)random(-3, 4);
+    if (burst[i].vx == 0 && burst[i].vy == 0) burst[i].vy = -2;
+    burst[i].color = (i % 3 == 0) ? C_YELLOW :
+                     (i % 3 == 1) ? C_FOOD_GLOW : C_CYAN;
+  }
+}
+
+static void redrawPlayfield() {
+  tft.fillRect(PLAY_X, PLAY_Y, GRID_COLS * CELL_SIZE,
+               GRID_ROWS * CELL_SIZE, C_BG);
+  drawGrid();
+
+  uint16_t idx = snakeTail;
+  for (uint16_t d = 0; d < snakeLen && d < 5; ++d) {
+    Point p = body[idx];
+    uint16_t glow = (d < 2) ? 0x05A0 : 0x0320;
+    tft.drawCircle(PLAY_X + p.x * CELL_SIZE + CELL_SIZE / 2,
+                   PLAY_Y + p.y * CELL_SIZE + CELL_SIZE / 2,
+                   5, glow);
+    idx = (idx + 1) % MAX_LENGTH;
+  }
+
+  for (uint16_t i = snakeTail; i != snakeHead; i = (i + 1) % MAX_LENGTH) {
+    uint16_t dist = (snakeHead - i + MAX_LENGTH) % MAX_LENGTH;
+    uint16_t c = (dist % 2 == 0) ? C_MID_GREEN : C_DARK_GREEN;
+    fillCell(body[i].x, body[i].y, c);
+  }
+  fillCell(body[snakeHead].x, body[snakeHead].y, C_HEAD_GREEN);
+  drawFood();
+}
+
+static void drawEatEffect(uint32_t now) {
+  if (now >= burstUntil) return;
+  redrawPlayfield();
+
+  uint32_t age = now - burstStarted;
+  uint8_t fade = (age > BURST_MS / 2) ? 1 : 0;
+  for (uint8_t i = 0; i < BURST_PARTICLES; ++i) {
+    int16_t px = burst[i].x + burst[i].vx * (int16_t)(age / 18);
+    int16_t py = burst[i].y + burst[i].vy * (int16_t)(age / 18);
+    if (px >= PLAY_X && px < PLAY_X + GRID_COLS * CELL_SIZE &&
+        py >= PLAY_Y && py < DPAD_Y) {
+      tft.fillCircle(px, py, fade ? 1 : 2, burst[i].color);
+    }
+  }
+
+  uint8_t ring = 3 + (uint8_t)(age / 45);
+  int16_t fx = PLAY_X + food.x * CELL_SIZE + CELL_SIZE / 2;
+  int16_t fy = PLAY_Y + food.y * CELL_SIZE + CELL_SIZE / 2;
+  tft.drawCircle(fx, fy, ring, C_FOOD_GLOW);
+
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(C_YELLOW, C_BG);
+  tft.drawString("+1", eatTextX, eatTextY - (int16_t)(age / 12), 2);
+
+}
 // ========================= D-pad (touch joystick) =========================
 
 static constexpr uint16_t DPAD_BG      = 0x1082;   // dark blue-grey background
@@ -480,6 +563,7 @@ static bool snakeStep() {
   drawFood();
 
   if (foodEaten) {
+    startEatEffect(newH.x, newH.y);
     spawnFood();
     currentFoodColor = C_RED;
     drawFood();
@@ -674,16 +758,17 @@ static void drawTitleScreen() {
   }
   tft.fillCircle(sx + 4, sy + 3, 1, TFT_WHITE);
   tft.fillCircle(sx + 55, sy + 4, 1, C_YELLOW);
-  tft.fillCircle(sx + 63, sy + 7, 1, C_RED);
+  tft.fillCircle(sx + 63, sy + 7, 1, C_CYAN);
 
   tft.setTextColor(C_WHITE, C_BLACK);
-  tft.drawString("PRESS USR2 TO START", SCREEN_W / 2, 202, 2);
+  tft.drawString("PRESS USR2", SCREEN_W / 2, 198, 2);
+  tft.drawString("TO START", SCREEN_W / 2, 218, 1);
   tft.setTextColor(C_CYAN, C_BLACK);
-  tft.drawFastHLine(42, 216, SCREEN_W - 84, 0x0451);
+  tft.drawFastHLine(42, 228, SCREEN_W - 84, 0x0451);
   tft.setTextColor(C_GRAY, C_BLACK);
-  tft.drawString("Touch D-pad or tilt to steer", SCREEN_W / 2, 240, 1);
+  tft.drawString("TOUCH OR TILT TO STEER", SCREEN_W / 2, 240, 1);
   tft.setTextColor(C_CYAN, C_BLACK);
-  tft.drawString("USR1=PAUSE   USR2=START", SCREEN_W / 2, 270, 1);
+  tft.drawString("USR1 PAUSE   USR2 START", SCREEN_W / 2, 270, 1);
 }
 
 static void drawGameOverScreen() {
@@ -695,9 +780,9 @@ static void drawGameOverScreen() {
 
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(C_RED, C_BLACK);
-  tft.drawString("GAME OVER", SCREEN_W / 2 + 1, 111, 4);
+  tft.drawString("GAME OVER", SCREEN_W / 2 + 1, 111, 3);
   tft.setTextColor(TFT_WHITE, C_BLACK);
-  tft.drawString("GAME OVER", SCREEN_W / 2, 109, 4);
+  tft.drawString("GAME OVER", SCREEN_W / 2, 109, 3);
 
   tft.setTextColor(C_YELLOW, C_BLACK);
   String s = "SCORE  " + String(score);
@@ -744,6 +829,10 @@ void loop() {
     drawFood();
   }
 
+  // --- V2 eat burst, floating score, and impact flash ---
+  if (state == STATE_PLAYING && now < burstUntil) {
+    drawEatEffect(now);
+  }
   // --- State machine ---
   switch (state) {
 
