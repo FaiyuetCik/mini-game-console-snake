@@ -441,10 +441,11 @@ static void initSnake() {
   dir       = DIR_RIGHT;
   nextDir   = DIR_RIGHT;
 
-  int startX = GRID_COLS / 2 - 1;
+  // Tail on the left, head on the right, matching DIR_RIGHT.
+  int startX = GRID_COLS / 2 - snakeLen / 2;
   int startY = GRID_ROWS / 2;
   for (int i = 0; i < snakeLen; ++i) {
-    body[i].x = startX - i;
+    body[i].x = startX + i;
     body[i].y = startY;
   }
 }
@@ -928,16 +929,16 @@ void loop() {
     }
 
     case STATE_GAME_OVER: {
-      if (now - deathTime > GAME_OVER_COOLDOWN) {
-        if (btns.usr2) {  // USR2 = restart
-          tft.fillRect(PLAY_X, PLAY_Y, GRID_COLS * CELL_SIZE, GRID_ROWS * CELL_SIZE, C_BG);
-          drawGrid();
-          startNewGame();
-          drawTopBar();
-          state    = STATE_PLAYING;
-          lastTick = now;
-          lastPulse = now;
-        }
+      // Restart immediately. Also accept a held USR2 so a press during the
+      // death frame is not lost by the edge-triggered button debounce logic.
+      if (btns.usr2 || digitalRead(USR2_PIN) == LOW) {
+        tft.fillRect(PLAY_X, PLAY_Y, GRID_COLS * CELL_SIZE, GRID_ROWS * CELL_SIZE, C_BG);
+        drawGrid();
+        startNewGame();
+        drawTopBar();
+        state    = STATE_PLAYING;
+        lastTick = now;
+        lastPulse = now;
       }
       break;
     }
